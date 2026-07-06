@@ -1,0 +1,194 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.callbacks import EarlyStopping
+
+# ==========================================
+# PART 1: PHYSICS SIMULATION (VELOCITY VERLET)
+# ==========================================
+G = 6.67430e-11
+M_EARTH = 5.972e24
+MU = G * M_EARTH
+R_EARTH = 6.371e6
+
+def simulate_orbit(num_orbits=10, dt=10.0, altitude=400e3):
+    r0 = R_EARTH + altitude
+    v0 = np.sqrt(MU / r0) # Circular orbit velocity
+
+    # Initial state: [x, y, vx, vy]
+    state = np.array([r0, 0.0, 0.0, v0])
+
+    T_orbit = 2 * np.pi * r0 / v0
+    total_steps = int(num_orbits * T_orbit / dt)
+
+    trajectory = np.zeros((total_steps, 5)) # x, y, vx, vy, t
+    trajectory[0, :4] = state
+    trajectory[0, 4] = 0.0
+
+    x, y, vx, vy = state
+
+    for i in range(1, total_steps):
+        r = np.sqrt(x**2 + y**2)
+        ax = -MU * x / r**3
+        ay = -MU * y / r**3
+
+        # Position update
+        x_new = x + vx * dt + 0.5 * ax * dt**2
+        y_new = y + vy * dt + 0.5 * ay * dt**2
+
+        # New acceleration
+        r_new = np.sqrt(x_new**2 + y_new**2)
+        ax_new = -MU * x_new / r_new**3
+        ay_new = -MU * y_new / r_new**3
+
+        # Velocity update
+        vx_new = vx + 0.5 * (ax + ax_new) * dt
+        vy_new = vy + 0.5 * (ay + ay_new) * dt
+
+        trajectory[i] = [x_new, y_new, vx_new, vy_new, i*dt]
+        x, y, vx, vy = x_new, y_new, vx_new, vy_new
+
+    return trajectory
+
+# ==========================================
+# PART 2: DATASET GENERATION
+# ==========================================
+def create_dataset(trajectory, window_size=10):
+    X, y = [], []
+    data = trajectory[:, :4] # Only x, y, vx, vy
+
+    for i in range(len(data) - window_size):
+        X.append(data[i : i + window_size].flatten())
+        y.append(data[i + window_size])
+
+    return np.array(X), np.array(y)
+
+# ==========================================
+# PART 3: ML MODEL DEFINITION & TRAINING
+# ==========================================
+def build_model(input_dim):
+    model = Sequential([
+        Dense(128, activation='relu', input_shape=(input_dim,)),
+        Dense(64, activation='relu'),
+        Dense(4) # Predict x, y, vx, vy
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+# ==========================================
+# PART 4: EXECUTION & AUTOREGRESSIVE PREDICTION
+# ==========================================
+print("Simulating orbit...")
+traj = simulate_orbit(num_orbits=10, dt=10.0)
+
+# Split data: 7 orbits train, 3 orbits test
+steps_per_orbit = int(2 * np.pi * (R_EARTH + 400e3) / np.sqrt(MU / (R_EARTH + 400e3)) / 10.0)
+train_end = int(7 * steps_per_orbit)
+
+train_data = traj[:train_end]
+test_data = traj[train_end:]
+
+print("Creating datasets...")
+X_train, y_train = create_dataset(train_data, window_size=10)
+X_test, y_test = create_dataset(test_data, window_size=10)
+
+# Normalize
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Note: We do NOT scale the targets (y) because autoregressive unscaling
+# of velocities can induce artificial energy errors. The ML model will output raw SI units.
+# (Alternatively, a target scaler can be used, but raw targets are more stable for physics auto-regression).
+
+print("Training Neural Network...")
+model = build_model(X_train_scaled.shape[1])
+early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+model.fit(X_train_scaled, y_train, validation_split=0.1, epochs=100, batch_size=64,
+          callbacks=[early_stop], verbose=0)
+
+# Autoregressive Multi-Step Prediction on Test Set
+print("Running autoregressive prediction...")
+window_size = 10
+pred_steps = len(test_data) - window_size
+predictions = np.zeros((pred_steps, 4))
+
+# Seed the prediction with the true initial window
+current_window = test_data[:window_size, :4].copy()
+
+for i in range(pred_steps):
+    # Scale input window
+    input_scaled = scaler.transform(current_window.flatten().reshape(1, -1))
+    # Predict next step
+    pred = model.predict(input_scaled, verbose=0)[0]
+    predictions[i] = pred
+    # Shift window and append prediction
+    current_window = np.vstack((current_window[1:], pred))
+
+# True trajectory for comparison
+true_states = test_data[window_size:window_size + pred_steps, :4]
+time_test = test_data[window_size:window_size + pred_steps, 4]
+
+# ==========================================
+# PART 5: SCIENTIFIC PLOTTING & ANALYSIS
+# ==========================================
+# Convert to km for plotting
+traj_km = traj[:, :2] / 1000
+true_km = true_states[:, :2] / 1000
+pred_km = predictions[:, :2] / 1000
+time_mins = time_test / 60.0
+
+# Calculate Error (Position Drift in meters)
+error_m = np.sqrt(np.sum((true_states - predictions)**2, axis=1))
+
+fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+
+# Plot 1: Full Ground Truth Orbit
+axs[0, 0].plot(traj_km[:, 0], traj_km[:, 1], color='black', linewidth=0.5)
+axs[0, 0].plot(0, 0, 'bo', markersize=8, label='Earth')
+axs[0, 0].set_title("Ground Truth Orbit (Velocity Verlet)")
+axs[0, 0].set_xlabel("X (km)")
+axs[0, 0].set_ylabel("Y (km)")
+axs[0, 0].set_aspect('equal')
+axs[0, 0].legend()
+axs[0, 0].grid(True, linestyle=':', alpha=0.7)
+
+# Plot 2: AI vs True Path (Test Set)
+axs[0, 1].plot(true_km[:, 0], true_km[:, 1], label='True Path (Physics)', color='blue', linewidth=1.5)
+axs[0, 1].plot(pred_km[:, 0], pred_km[:, 1], label='AI Predicted Path', color='red', linestyle='--', linewidth=1.5)
+axs[0, 1].set_title("Autoregressive AI Prediction vs Physics")
+axs[0, 1].set_xlabel("X (km)")
+axs[0, 1].set_ylabel("Y (km)")
+axs[0, 1].set_aspect('equal')
+axs[0, 1].legend()
+axs[0, 1].grid(True, linestyle=':', alpha=0.7)
+
+# Plot 3: Error vs Time
+axs[1, 0].plot(time_mins, error_m, color='darkred', linewidth=2)
+axs[1, 0].set_title("Prediction Error Drift Over Time")
+axs[1, 0].set_xlabel("Time (minutes)")
+axs[1, 0].set_ylabel("Euclidean Position Error (meters)")
+axs[1, 0].set_yscale('log')
+axs[1, 0].grid(True, linestyle=':', alpha=0.7)
+
+# Plot 4: Specific Energy Comparison (Physical insight)
+KE_true = 0.5 * np.sum(true_states[:, 2:]**2, axis=1)
+PE_true = -MU / np.sqrt(np.sum(true_states[:, :2]**2, axis=1))
+E_true = KE_true + PE_true
+
+KE_pred = 0.5 * np.sum(predictions[:, 2:]**2, axis=1)
+PE_pred = -MU / np.sqrt(np.sum(predictions[:, :2]**2, axis=1))
+E_pred = KE_pred + PE_pred
+
+axs[1, 1].plot(time_mins, (E_true - E_true[0]) / 1e6, label='Verlet (Physics)', color='blue', linewidth=2)
+axs[1, 1].plot(time_mins, (E_pred - E_true[0]) / 1e6, label='Neural Network', color='red', linestyle='--', linewidth=2)
+axs[1, 1].set_title("Specific Orbital Energy Drift")
+axs[1, 1].set_xlabel("Time (minutes)")
+axs[1, 1].set_ylabel("Energy Deviation (MJ/kg)")
+axs[1, 1].legend()
+axs[1, 1].grid(True, linestyle=':', alpha=0.7)
+
+plt.tight_layout()
+plt.show()
