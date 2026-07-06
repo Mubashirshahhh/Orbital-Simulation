@@ -1,0 +1,124 @@
+#@title 🛰️ Unified Orbital Command Center { run: "auto" }
+import IPython
+import numpy as np
+
+# --- Core Physics Constants ---
+G = 6.67430e-11
+M_EARTH = 5.972e24
+mu = G * M_EARTH
+r_earth_m = 6371000
+
+html_code = f"""
+<div style='background: #0d1117; padding: 20px; border-radius: 15px; text-align: center; font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Helvetica, Arial, sans-serif; border: 1px solid #30363d; max-width: 650px; margin: auto; color: #c9d1d9;'>
+  <h2 style='color: #58a6ff; margin: 0 0 15px 0;'>Orbital Command Dashboard</h2>
+  
+  <!-- Integrated Controls Panel -->
+  <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 15px; background: #161b22; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #30363d;'>
+    <div style='text-align: left;'>
+      <label style='font-size: 0.8em; color: #8b949e;'>ALTITUDE (km)</label><br>
+      <input type=\"range\" id=\"altSlider\" min=\"200\" max=\"2000\" value=\"630\" style=\"width: 100%;\">
+      <div id=\"altVal\" style=\"color: #39d353; font-weight: bold; font-size: 0.9em;\">630 km</div>
+    </div>
+    <div style='text-align: left;'>
+      <label style='font-size: 0.8em; color: #8b949e;'>SPEED MULTIPLIER</label><br>
+      <input type=\"range\" id=\"speedSlider\" min=\"0.1\" max=\"5\" step=\"0.1\" value=\"1.0\" style=\"width: 100%;\">
+      <div id=\"speedVal\" style=\"color: #39d353; font-weight: bold; font-size: 0.9em;\">1.0x</div>
+    </div>
+  </div>
+
+  <!-- Telemetry Row -->
+  <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;'>
+    <div style='background: #161b22; padding: 8px; border-radius: 6px; border: 1px solid #30363d;'>
+      <div style='color: #8b949e; font-size: 0.7em;'>VELOCITY</div>
+      <div id='velDisplay' style='color: #58a6ff; font-weight: bold;'>---</div>
+    </div>
+    <div style='background: #161b22; padding: 8px; border-radius: 6px; border: 1px solid #30363d;'>
+      <div style='color: #8b949e; font-size: 0.7em;'>PERIOD</div>
+      <div id='perDisplay' style='color: #58a6ff; font-weight: bold;'>---</div>
+    </div>
+  </div>
+
+  <canvas id='unifiedCanvas' width='600' height='400' style='background: #000; border-radius: 8px; border: 1px solid #444;'></canvas>
+</div>
+
+<script>
+(function() {{
+  const canvas = document.getElementById(\"unifiedCanvas\");
+  const ctx = canvas.getContext(\"2d\");
+  const altS = document.getElementById(\"altSlider\");
+  const speedS = document.getElementById(\"speedSlider\");
+  
+  const mu = {mu};
+  const rEarthM = {r_earth_m};
+  const rEarthPx = 80;
+
+  let angle = 0;
+  let lastTime = 0;
+
+  function updateTelemetry(alt) {{
+    const r = rEarthM + (alt * 1000);
+    const v = Math.sqrt(mu / r);
+    const p = (2 * Math.PI * r / v) / 60;
+    
+    document.getElementById(\"velDisplay\").innerText = Math.round(v) + \" m/s\";
+    document.getElementById(\"perDisplay\").innerText = Math.round(p) + \" min\";
+    document.getElementById(\"altVal\").innerText = alt + \" km\";
+    return {{v, p}};
+  }}
+
+  function render(time) {{
+    if (!lastTime) lastTime = time;
+    const dt = time - lastTime;
+    lastTime = time;
+
+    const alt = parseInt(altS.value);
+    const speedMult = parseFloat(speedS.value);
+    const stats = updateTelemetry(alt);
+    document.getElementById(\"speedVal\").innerText = speedMult.toFixed(1) + \"x\";
+
+    const orbitRadiusPx = rEarthPx + (alt / 6371) * rEarthPx;
+    const frameSpeed = (0.0001 * speedMult);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+
+    ctx.fillStyle = \"#040d16\";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, orbitRadiusPx, 0, Math.PI * 2);
+    ctx.strokeStyle = \"rgba(88, 166, 255, 0.2)\";
+    ctx.setLineDash([5, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const grad = ctx.createRadialGradient(cx, cy, 5, cx, cy, rEarthPx);
+    grad.addColorStop(0, \"#58a6ff\");
+    grad.addColorStop(1, \"#032f62\");
+    ctx.beginPath();
+    ctx.arc(cx, cy, rEarthPx, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = \"#fff\";
+    ctx.stroke();
+
+    const sx = cx + orbitRadiusPx * Math.cos(angle);
+    const sy = cy + orbitRadiusPx * Math.sin(angle);
+    
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = \"#f85149\";
+    ctx.fillStyle = \"#f85149\";
+    ctx.beginPath();
+    ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    angle += frameSpeed * dt;
+    requestAnimationFrame(render);
+  }}
+  requestAnimationFrame(render);
+}})();
+</script>
+"""
+IPython.display.display(IPython.display.HTML(html_code))
